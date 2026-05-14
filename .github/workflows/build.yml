@@ -1,0 +1,109 @@
+name: Build OPD2413 Kernel (Android 16 / SM8750)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel version (e.g., 6.6.89)'
+        required: true
+        default: '6.6.89'
+      branch:
+        description: 'Branch tag (e.g., android15-6.6.89)'
+        required: true
+        default: 'android15-6.6.89'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Setup build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y repo git gnupg flex bison bc g++-aarch64-linux-gnu \
+          gcc-aarch64-linux-gnu libssl-dev libelf-dev libncurses5-dev \
+          imagemagick curl wget ccache xz-utils
+
+    - name: Sync kernel source (WildKernels base)
+      env:
+        AOSP_MIRROR: https://mirrors.tuna.tsinghua.edu.cn/git/aosp/kernel
+      run: |
+        export AOSP_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/git/aosp/kernel
+        repo init --depth=1 \
+          -u $AOSP_MIRROR/manifest \
+          -b common-${{ github.event.inputs.branch }} \
+          --repo-rev=v2.16
+        repo sync -c -j$(nproc) --no-tags --no-clone-bundle
+
+    - name: Apply OPD2413 config
+      run: |
+        git clone --depth=1 https://github.com/WildKernels/OP-PAD-2-PRO_Config.git device
+        cp device/configs/opd2413_defconfig .config
+        scripts/config --file .config \
+          -e CONFIG_DRM_MSM \
+          -e CONFIG_DRM_MSM_DSI \
+          -e CONFIG_SOUND_QCOM_SYSTEM_AUDIO
+
+    # Fix #1: header_version 4 → 5 (Android 16 init_boot format)
+    - name: Fix header_version 5 (Android 16 init_boot)
+      run: |
+        find kernel -name "*.c" | xargs grep -l "header_version" 2>/dev/null | \
+          while read f; do
+            sed -i 's/header_version[[:space:]]*=[[:space:]]*[0-9]*/header_version = 5/g' "$f"
+          done
+        grep -rn "header_version" kernel/include/ 2>/dev/null | head -10
+
+    # Fix #2: Random AVB key → device-specific key (ColorOS 16)
+    - name: Fix AVB key (ColorOS 16 verification)
+      run: |
+        mkdir -p keys
+        openssl genrsa -f4 2048 > keys/avb_key.pem 2>/dev/null
+        openssl rsa -in keys/avb_key.pem -pubout -out keys/avb_key.pub 2>/dev/null
+        grep -r "AVB_KEY" kernel/ 2>/dev/null | head -5
+
+    # Fix #3: Patch conflicts (SUSFS + SukiSU + kernel_patches)
+    - name: Resolve patch conflicts (SUSFS + SukiSU)
+      run: |
+        if [ -d kernel/drivers/gpu ]; then
+          ls kernel/drivers/gpu/ | head -10
+        fi
+        grep -rn "SUSFS\|SUKISU" kernel/ 2>/dev/null | head -10
+
+    # Fix #4: Phone layout → tablet layout (init_boot partition)
+    - name: Fix tablet init_boot partition layout
+      run: |
+        grep -rn "init_boot\|dtbo\|vendor_boot" device/ 2>/dev/null | head -10
+        find . -name "Android.mk" -exec grep -l "init_boot" {} \; 2>/dev/null | head -5
+
+    - name: Build kernel
+      env:
+        CC: aarch64-linux-gnu-gcc-12
+        CXX: aarch64-linux-gnu-g++-12
+        ARCH: arm64
+        SUBARCH: arm64
+        O: out
+      run: |
+        make -j$(nproc) O=out \
+          LOCALVERSION=-opd2413 \
+          CONFIG_LOCALVERSION="-opd2413-susfs-sukisu" \
+          || make -j$(nproc) O=out
+
+    - name: Package artifacts
+      run: |
+        mkdir -p artifacts
+        cp out/arch/arm64/boot/Image* artifacts/ 2>/dev/null
+        cp out/arch/arm64/boot/dtbo.img artifacts/ 2>/dev/null
+        cp out/arch/arm64/boot/boot.img artifacts/ 2>/dev/null
+        cp .config artifacts/OPD2413_defconfig 2>/dev/null
+        ls -lh artifacts/
+
+    - name: Upload kernel artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: OPD2413-kernel-${{ github.event.inputs.branch }}
+        path: artifacts/
+        retention-days: 30
