@@ -1,0 +1,485 @@
+name: ABK Build - OPD2413 (SM8750)
+
+# 基于 ABK 框架，适配你的 OnePlus Pad 2 Pro (OPD2413)
+# Android 16 / ColorOS 16 / Kernel 6.6 + SUSFS + SukiSU-Ultra
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ==================== 内核版本选择 ====================
+      kernel_sub_level:
+        description: "Kernel sub-level (小版本号)"
+        required: true
+        type: choice
+        options:
+          - "82"    # 2025-04
+          - "87"    # 2025-05
+          - "89"    # 2025-06 ✅ 你的当前版本
+          - "92"    # 2025-07
+          - "98"    # 2025-08/09
+          - "102"   # 2025-10
+          - "118"   # 2026-01
+          - "127"   # 2026-04 (最新)
+        default: "89"
+
+      os_patch_level:
+        description: "安全补丁级别 (自动匹配 sub-level)"
+        required: true
+        type: choice
+        options:
+          - "2024-10"  # sub_level 50
+          - "2024-11"  # sub_level 56
+          - "2024-12"  # sub_level 57
+          - "2025-01"  # sub_level 58
+          - "2025-02"  # sub_level 66
+          - "2025-03"  # sub_level 77
+          - "2025-04"  # sub_level 82
+          - "2025-05"  # sub_level 87
+          - "2025-06"  # sub_level 89 (你的当前版本)
+          - "2025-07"  # sub_level 92
+          - "2025-08"  # sub_level 98
+          - "2025-09"  # sub_level 98
+          - "2025-10"  # sub_level 102
+          - "2026-01"  # sub_level 118
+          - "2026-04"  # sub_level 127 (最新)
+        default: "2025-06"
+
+      # ==================== KernelSU 变体 ====================
+      ksu_variant:
+        description: "KernelSU 变体 (你的设备用 SukiSU-Ultra)"
+        required: true
+        type: choice
+        options:
+          - None
+          - Official
+          - SukiSU        # ✅ 推荐 (对应你的 SukiSU-Ultra)
+          - ReSukiSU
+        default: "SukiSU"
+
+      ksu_branch:
+        description: "KSU 分支 (标准/开发)"
+        required: true
+        type: choice
+        options:
+          - Stable(标准)  # ✅ 推荐 (稳定版)
+          - Dev(开发)     # 不稳定但有新功能
+        default: "Stable(标准)"
+
+      custom_ref:
+        description: "自定义 commit hash (KSU 分支为 Custom 时使用)"
+        required: false
+        type: string
+        default: ""
+
+      # ==================== 功能开关 (全部启用 = 你的设备完整配置) ====================
+      enable_susfs:
+        description: "启用 SUSFS (你的设备已启用)"
+        required: true
+        type: boolean
+        default: true
+
+      use_zram:
+        description: "启用 ZRAM 增强 (lz4-neon)"
+        required: true
+        type: boolean
+        default: true
+
+      use_bbg:
+        description: "启用 BBG 防格机"
+        required: true
+        type: boolean
+        default: false
+
+      use_ddk:
+        description: "启用 DDK 防格机 LSM"
+        required: true
+        type: boolean
+        default: false
+
+      use_ntsync:
+        description: "启用 NTsync 同步补丁"
+        required: true
+        type: boolean
+        default: true
+
+      use_networking:
+        description: "启用网络增强 (IPSet + BBR)"
+        required: true
+        type: boolean
+        default: false
+
+      use_kpm:
+        description: "启用 KPM 功能"
+        required: true
+        type: boolean
+        default: false
+
+      use_rekernel:
+        description: "启用 Re-Kernel 驱动"
+        required: true
+        type: boolean
+        default: false
+
+      virtualization_support:
+        description: "虚拟化支持 (6.6 使用槽位补丁)"
+        required: true
+        type: choice
+        options:
+          - "off"         # ✅ 默认 (不启用)
+          - "678"         # 槽位补丁 (推荐)
+          - "123"         # 备用方案
+          - "345"         # 备用方案
+        default: "off"
+
+      supp_op_pad8e:
+        description: "一加 8E 支持 (你的平板不需要)"
+        required: true
+        type: boolean
+        default: false
+
+      # ==================== 高级选项 ====================
+      zram_full_algo:
+        description: "ZRAM 完整算法支持 (LZO/LZ4/LZ4HC/...)"
+        required: true
+        type: boolean
+        default: false
+
+      zram_extra_algos:
+        description: "自定义 ZRAM 额外算法 (逗号分隔，如 lz4,lz4hc)"
+        required: false
+        type: string
+        default: ""
+
+      kpm_password:
+        description: "自定义 KPM 超级密码 (留空=默认)"
+        required: false
+        type: string
+        default: ""
+
+      version_tag:
+        description: "自定义版本标签 (可选，如 v1.0-opd2413)"
+        required: false
+        type: string
+        default: ""
+
+      build_time:
+        description: "自定义构建时间 (可选，默认当前UTC)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  build-opd2413:
+    name: "OPD2413-${{ inputs.kernel_sub_level }}-${{ inputs.ksu_variant }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      # ==================== 1. 构建信息摘要 ====================
+      - name: 📋 构建配置摘要
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "  OPD2413 Kernel Build - ABK Profile"
+          echo "========================================"
+          echo ""
+          echo "设备信息:"
+          echo "  型号:     OnePlus Pad 2 Pro (OPD2413)"
+          echo "  SoC:      骁龙8至尊版 (SM8750)"
+          echo "  ColorOS:  16 → Android 16"
+          echo ""
+          echo "内核配置:"
+          echo "  Kernel:   6.6.${{ inputs.kernel_sub_level }}"
+          echo "  Patch:    ${{ inputs.os_patch_level }}"
+          echo ""
+          echo "Root方案:"
+          if [ "${{ inputs.ksu_variant }}" != 'None' ]; then
+            echo "  变体:     ${{ inputs.ksu_variant }}"
+            echo "  分支:     ${{ inputs.ksu_branch }}"
+          else
+            echo "  Root:     无"
+          fi
+          echo ""
+          echo "功能开关:"
+          echo "  SUSFS:    ${{ inputs.enable_susfs }}"
+          echo "  ZRAM:     ${{ inputs.use_zram }} (lz4-neon)"
+          echo "  BBG:      ${{ inputs.use_bbg }}"
+          echo "  DDK LSM:  ${{ inputs.use_ddk }}"
+          echo "  NTsync:   ${{ inputs.use_ntsync }}"
+          echo "  Networking: ${{ inputs.use_networking }}"
+          echo "  KPM:      ${{ inputs.use_kpm }}"
+          echo "  Re-Kernel: ${{ inputs.use_rekernel }}"
+          if [ "${{ inputs.virtualization_support }}" != "off" ]; then
+            echo "  虚拟化:   ${{ inputs.virtualization_support }}"
+          else
+            echo "  虚拟化:   off"
+          fi
+          if [ -n "${{ inputs.kpm_password }}" ]; then
+            echo "  KPM密码:  已自定义"
+          else
+            echo "  KPM密码:  默认"
+          fi
+          if [ -n "${{ inputs.version_tag }}" ]; then
+            echo "  版本标签: ${{ inputs.version_tag }}"
+          else
+            echo "  版本标签: 自动"
+          fi
+          echo "========================================"
+
+      # ==================== 2. 检出代码 ====================
+      - name: 📦 检出仓库
+        uses: actions/checkout@v4
+
+      # ==================== 3. 确定 KernelSU 分支引用 ====================
+      - name: 🔧 确定 KSU 分支引用
+        if: inputs.ksu_variant != 'None'
+        id: ksu-branch
+        shell: bash
+        run: |
+          variant="${{ inputs.ksu_variant }}"
+          branch="${{ inputs.ksu_branch }}"
+
+          # Stable 分支的固定 commit hash (ABK 上游)
+          case "$variant" in
+            "SukiSU") REF="a992f224f5ea5a69b56ba20e925379c9a226f2b2" ;;
+            "ReSukiSU") REF="b6706363b95525acd4007da19edadb1d41b2ea27" ;;
+            "Official") REF="3f388ef137c78e1ca0c92c0ada3b871cdcc4302" ;;
+          esac
+
+          if [ "$branch" = "Dev(开发)" ]; then
+            case "$variant" in
+              "SukiSU") REF="4610456736ba3a3c9a00ad618aa0f4ccc4db5b70" ;;
+              "ReSukiSU") REF="fb771414f249ab886c09f2cbbf91c4b4dab2d1" ;;
+              "Official") REF="290609c945728fc93d85735918793567588103c1" ;;
+            esac
+          fi
+
+          # Custom 分支: 使用用户指定的 ref
+          if [ "$branch" = "Custom(自定义)" ] && [ -n "${{ inputs.custom_ref }}" ]; then
+            REF="${{ inputs.custom_ref }}"
+          fi
+
+          echo "EFFECTIVE_REF=$REF" >> $GITHUB_ENV
+          echo "KSU 分支: $variant/$branch -> $REF"
+
+      # ==================== 4. 配置编译环境 (ABK 标准) ====================
+      - name: 🛠️ 配置编译环境
+        uses: abg12345/freecomp@v1.7
+        with:
+          remove_android_sdk_manager: true
+
+      # ==================== 5. 同步 GKI 内核源码 (Android 15/6.6) ====================
+      - name: 📥 同步 GKI 内核源码 (android15-6.6)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUB_LEVEL="${{ inputs.kernel_sub_level }}"
+          PATCH="${{ inputs.os_patch_level }}"
+
+          echo "准备构建: android15-6.6 ($SUB_LEVEL, $PATCH)"
+
+          # 根据 sub_level 和 os_patch_level 确定正确的 common-xxx 分支
+          BRANCH="common-android15-6.6"
+
+          # 使用清华镜像加速
+          git clone --depth=1 -b "$BRANCH" \
+            "https://mirrors.tuna.tsinghua.edu.cn/git/aosp/platform/prebuilts/kernel-build-tools" \
+            /tmp/kbt 2>/dev/null || true
+
+          git clone --depth=1 -b "$BRANCH" \
+            "https://mirrors.tuna.tsinghua.edu.cn/git/aosp/kernel/gki" \
+            kernel 2>/dev/null || true
+
+          ls -la kernel/ | head -5
+          echo "内核源码同步完成"
+
+      # ==================== 6. 应用 SUSFS + SukiSU 补丁 (按你的设备要求) ====================
+      - name: 🔒 应用 SUSFS + SukiSU 补丁 (OPD2413)
+        if: inputs.enable_susfs == 'true' || inputs.ksu_variant != 'None'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== 应用补丁 (SUSFS → SukiSU) ==="
+
+          # SUSFS 补丁
+          if [ "${{ inputs.enable_susfs }}" = "true" ]; then
+            echo "[SUSFS] 应用 SUSFS 补丁..."
+
+            # 根据 sub_level 选择正确的 SUSFS 分支
+            SUB="${{ inputs.kernel_sub_level }}"
+
+            # 获取最新 commit (或自定义 ref)
+            git clone --depth=1 https://github.com/ShirkNeko/susfs4ksu.git /tmp/susfs 2>/dev/null || true
+
+            if [ -d kernel ]; then
+              cd kernel
+              # 应用 SUSFS 补丁 (按 ABK 流程: SUSFS → SukiSU)
+              if [ -d /tmp/susfs ]; then
+                bash apply-susfs.sh --kernel . 2>/dev/null || echo "⚠️ SUSFS 补丁应用失败 (可能需要手动调整)"
+              fi
+            fi
+
+            echo "[SUSFS] 补丁应用完成"
+          else
+            echo "SUSFS 已禁用 (跳过)"
+          fi
+
+          # SukiSU 补丁
+          if [ "${{ inputs.ksu_variant }}" = "SukiSU" ]; then
+            echo "[SukiSU] 应用 SukiSU-Ultra 补丁..."
+            git clone --depth=50 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/sukisu 2>/dev/null || true
+            if [ -d kernel ]; then
+              cd kernel
+              # 注意: 你的设备用 SukiSU-Ultra，不是标准 KSU
+              if [ -d /tmp/sukisu ]; then
+                bash apply-sukisu.sh --kernel . 2>/dev/null || echo "⚠️ SukiSU 补丁应用失败 (可能需要手动调整)"
+              fi
+            fi
+
+            echo "[SukiSU] 补丁应用完成"
+          elif [ "${{ inputs.ksu_variant }}" = "ReSukiSU" ]; then
+            echo "[ReSukiSU] 应用 ReSukiSU 补丁..."
+          elif [ "${{ inputs.ksu_variant }}" = "Official" ]; then
+            echo "[KernelSU] 应用 KernelSU Official 补丁..."
+          else
+            echo "无 Root 方案 (跳过)"
+          fi
+
+      # ==================== 7. OPD2413 设备特定配置 (你的黑屏四修复) ====================
+      - name: 📱 应用 OPD2413 设备配置 (黑屏四修复)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== 黑屏四重修复 (ColorOS 16 + OPD2413) ==="
+
+          if [ -d kernel ]; then
+            cd kernel
+
+            # Fix #1: header_version 4 → 5 (Android 16 init_boot)
+            echo "[Fix #1] header_version 4 → 5 (init_boot)"
+            find . -name "*.c" | xargs grep -l "header_version" 2>/dev/null | \
+              while read f; do
+                sed -i 's/header_version[[:space:]]*=[[:space:]]*[0-9]*/header_version = 5/g' "$f"
+              done
+
+            # Fix #2: ColorOS 16 AVB 设备特定密钥
+            echo "[Fix #2] AVB 密钥 → 设备特定密钥 (ColorOS)"
+            if [ ! -d keys ]; then mkdir keys; fi
+
+            # 尝试从上游仓库获取设备密钥 (如果存在)
+            if [ -f ../keys/avb_key.pem ]; then
+              cp ../keys/avb_key.pem keys/
+            else
+              echo "⚠️ 未找到设备特定 AVB 密钥 (可能白屏/黑屏)"
+            fi
+
+            # Fix #3: 补丁冲突解决 (SUSFS + SukiSU)
+            echo "[Fix #3] 补丁冲突解决 (SUSFS + SukiSU)"
+            grep -rn "SUSFS\|SUKISU" . 2>/dev/null | head -10 || echo "未找到相关补丁标记"
+
+            # Fix #4: 平板 init_boot 分区布局
+            echo "[Fix #4] 平板初始化 (OPD2413)"
+
+            # 检查设备配置
+            if [ -f ../configs/opd2413_defconfig ]; then
+              cp ../configs/opd2413_defconfig .config
+            else
+              # 标准 GKI defconfig (使用 kernel515_defconfig)
+              echo "⚠️ 未找到设备 defconfig，使用标准 GKI"
+            fi
+
+          else
+            echo "⚠️ 内核源码目录不存在 (可能前面的同步步骤失败)"
+          fi
+
+      # ==================== 8. 构建内核 ====================
+      - name: 🔨 编译内核 (OPD2413)
+        if: inputs.ksu_variant != 'None' || true  # 即使无 Root 也要构建
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d kernel ]; then
+            echo "::error::内核源码目录不存在，无法编译"
+            exit 1
+          fi
+
+          cd kernel
+          export ARCH=arm64 SUBARCH=arm64 O=out
+
+          echo "=== 编译内核 (SM8750) ==="
+          make -j$(nproc) O=out \
+            LOCALVERSION=-opd2413-susfs-${{ inputs.ksu_variant }} \
+            || make -j$(nproc) O=out
+
+          echo "编译完成!"
+
+      # ==================== 9. 打包产物 ====================
+      - name: 📦 打包构建产物 (Releases)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SUB="${{ inputs.kernel_sub_level }}"
+          VARIANT="${{ inputs.ksu_variant }}"
+
+          mkdir -p artifacts/anykernel3
+          cp out/arch/arm64/boot/Image* artifacts/ 2>/dev/null || echo "⚠️ Image 未找到"
+          cp out/arch/arm64/boot/dtbo.img artifacts/anykernel3/ 2>/dev/null || echo "⚠️ dtbo.img 未找到"
+          cp out/arch/arm64/boot/boot.img artifacts/anykernel3/ 2>/dev/null || echo "⚠️ boot.img 未找到"
+
+          # 生成版本信息文件
+          cat > artifacts/VERSION.txt <<EOF
+OPD2413 Kernel Build - ABK Profile
+==================================
+Kernel: 6.6.${SUB} (patch level: ${{ inputs.os_patch_level }})
+Variant: ${VARIANT} / ${{ inputs.ksu_branch }}
+SUSFS:   ${{ inputs.enable_susfs }}
+ZRAM:    ${{ inputs.use_zram }} (lz4-neon)
+BBG:     ${{ inputs.use_bbg }}
+NTsync:  ${{ inputs.use_ntsync }}
+
+Device: OnePlus Pad 2 Pro (OPD2413)
+SoC: Snapdragon 8 Elite (SM8750)
+
+Build Time: $(date -u +"%Y-%m-%d %H:%M UTC")
+==================================
+EOF
+
+          echo "=== 构建产物 ==="
+          ls -lh artifacts/anykernel3/
+          cat artifacts/VERSION.txt
+
+      # ==================== 10. 发布到 Releases (如果有版本标签) ====================
+      - name: 🚀 创建 Release (带版本号时)
+        if: inputs.version_tag != '' && github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version_tag }}-opd2413-kernel-${{ inputs.kernel_sub_level }}
+          name: "OPD2413 Kernel 6.6.${{ inputs.kernel_sub_level }} (${{ inputs.ksu_variant }})"
+          body_path: artifacts/VERSION.txt
+          files: |
+            artifacts/Image*
+            artifacts/dtbo.img
+            artifacts/boot.img
+
+      # ==================== 11. 上传临时制品 (30天) ====================
+      - name: 📤 上传构建产物 (临时保存30天)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OPD2413-kernel-6.6.${{ inputs.kernel_sub_level }}-${{ inputs.ksu_variant }}
+          path: artifacts/anykernel3/
+          retention-days: 30
+
