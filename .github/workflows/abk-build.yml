@@ -3,7 +3,7 @@ name: ABK Build - OPD2413 (SM8750)
 # 基于 ABK 框架，适配你的 OnePlus Pad 2 Pro (OPD2413)
 # Android 16 / ColorOS 16 / Kernel 6.6 + SUSFS + SukiSU-Ultra
 
-on:
+'on':
   workflow_dispatch:
     inputs:
       kernel_sub_level:
